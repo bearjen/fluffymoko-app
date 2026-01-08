@@ -1,0 +1,7 @@
+{
+  "name": "FluffyMoko 寵物住宿管理系統",
+  "description": "一個專業且美觀的寵物住宿管理平台，具備預約管理、寵物檔案、住宿狀態監控及 AI 智能助理功能。",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
