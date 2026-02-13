@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useCallback } from 'react';
 import { Booking, BookingStatus, Pet, PetType, Room, RoomStatus, PreCheckRecord } from '../types';
 import PreCheckForm from './PreCheckForm';
@@ -182,7 +183,10 @@ const BookingList: React.FC<BookingListProps> = ({ bookings, setBookings, pets, 
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 font-bold text-slate-600">
-              {bookings.filter(b => b.checkIn.startsWith(selectedMonth) || b.checkOut.startsWith(selectedMonth)).map(b => {
+              {bookings
+                .filter(b => b.checkIn.startsWith(selectedMonth) || b.checkOut.startsWith(selectedMonth))
+                .sort((a, b) => a.checkIn.localeCompare(b.checkIn))
+                .map(b => {
                 const unavailableRooms = getUnavailableRooms(b.checkIn, b.checkOut, b.id);
                 return (
                   <tr key={b.id} className="hover:bg-slate-50/50 transition-all group">
@@ -402,7 +406,7 @@ const BookingList: React.FC<BookingListProps> = ({ bookings, setBookings, pets, 
 
                  <div className="flex gap-4 pt-6">
                     <button onClick={() => setEditingBooking(null)} className="flex-1 py-5 bg-slate-100 text-slate-500 rounded-2xl font-black uppercase text-xs tracking-widest">取消</button>
-                    <button onClick={handleSaveBooking} className="flex-1 py-5 bg-slate-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl shadow-slate-200">儲存預約資訊</button>
+                    <button onClick={handleSaveBooking} className="flex-1 py-5 bg-indigo-900 text-white rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl shadow-slate-200">儲存預約資訊</button>
                  </div>
               </div>
            </div>

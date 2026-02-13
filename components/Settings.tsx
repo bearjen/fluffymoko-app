@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { supabase } from '../services/supabaseClient';
+import { supabase, supabaseKey } from '../services/supabaseClient';
 
 interface SettingsProps {
   onExport: () => string;
@@ -13,46 +13,66 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // 執行雲端備份 (Sync to Cloud)
+  // 驗證金鑰格式是否看起來正確
+  const validateSupabaseConfig = () => {
+    if (!supabaseKey || !supabaseKey.startsWith('eyJ')) {
+      alert('❌ 設定錯誤：您的 Supabase Anon Key 格式似乎不正確。\n\n正確的金鑰應該是以 "eyJ" 開頭的超長字串。請到 Supabase Dashboard 的 Project Settings > API 重新複製「anon public」金鑰。');
+      return false;
+    }
+    return true;
+  };
+
   const handleCloudSync = async () => {
-    if (!syncId.trim()) {
+    const key = syncId.trim();
+    if (!key) {
       alert('請先輸入一個「同步金鑰」，這將作為您跨裝置存取的憑證。');
       return;
     }
 
+    if (!validateSupabaseConfig()) return;
+
     setIsSyncing(true);
     try {
-      // 取得目前的 base64 資料並轉回 JSON 物件
       const base64Data = onExport();
       const rawJson = JSON.parse(decodeURIComponent(escape(atob(base64Data))));
       
       const { error } = await supabase
         .from('settings')
         .upsert({ 
-          id: syncId.trim(), 
+          id: key, 
           data: rawJson,
           updated_at: new Date().toISOString()
-        });
+        }, { onConflict: 'id' });
 
       if (error) throw error;
 
-      localStorage.setItem('fm_sync_id', syncId.trim());
+      localStorage.setItem('fm_sync_id', key);
       setLastSyncTime(new Date().toLocaleTimeString());
-      alert('✅ 雲端同步成功！資料已安全存儲在 Supabase 資料庫。');
+      alert('✅ 雲端同步成功！資料已安全存儲。');
     } catch (err: any) {
-      console.error('Sync error:', err);
-      alert(`❌ 同步失敗：${err.message || '請確認網路連線或資料庫權限'}`);
+      console.error('Supabase Sync Error:', err);
+      let errorMsg = err.message || '未知錯誤';
+      
+      if (err.message === 'Failed to fetch' || err.name === 'TypeError') {
+        errorMsg = '無法連線到 Supabase 伺服器。\n\n可能的解決方案：\n1. 檢查您的 Supabase URL 是否正確。\n2. 檢查 Anon Key 是否正確 (應以 eyJ 開頭)。\n3. 如果您有安裝 AdBlock (廣告阻擋器)，請先對此網站關閉它再試一次。';
+      } else if (err.message?.includes('relation "public.settings" does not exist')) {
+        errorMsg = '資料庫中找不到 "settings" 資料表。請去 Supabase SQL Editor 執行建表語法。';
+      }
+      
+      alert(`❌ 同步失敗：\n${errorMsg}`);
     } finally {
       setIsSyncing(false);
     }
   };
 
-  // 執行雲端還原 (Restore from Cloud)
   const handleCloudRestore = async () => {
-    if (!syncId.trim()) {
+    const key = syncId.trim();
+    if (!key) {
       alert('請輸入您的「同步金鑰」以進行還原。');
       return;
     }
+
+    if (!validateSupabaseConfig()) return;
 
     if (!confirm('⚠️ 警告：還原操作將會「完全覆蓋」目前設備上的所有資料，確定要繼續嗎？')) {
       return;
@@ -63,32 +83,34 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
       const { data, error } = await supabase
         .from('settings')
         .select('data')
-        .eq('id', syncId.trim())
-        .single();
+        .eq('id', key)
+        .maybeSingle();
 
-      if (error) {
-        if (error.code === 'PGRST116') {
-          throw new Error('找不到該金鑰對應的備份資料，請檢查金鑰是否輸入正確。');
-        }
-        throw error;
+      if (error) throw error;
+
+      if (!data) {
+        throw new Error('找不到該金鑰對應的備份資料，請檢查金鑰是否正確。');
       }
 
       if (data && data.data) {
-        // 將 JSON 轉回 base64 以適配現有的 onImport 邏輯
         const base64 = btoa(unescape(encodeURIComponent(JSON.stringify(data.data))));
         const success = onImport(base64);
         
         if (success) {
-          localStorage.setItem('fm_sync_id', syncId.trim());
-          alert('✅ 資料還原成功！系統將自動重新整理以應用新數據。');
+          localStorage.setItem('fm_sync_id', key);
+          alert('✅ 資料還原成功！');
           window.location.reload();
         } else {
-          throw new Error('資料格式校驗失敗。');
+          throw new Error('資料還原失敗：數據格式不符。');
         }
       }
     } catch (err: any) {
-      console.error('Restore error:', err);
-      alert(`❌ 還原失敗：${err.message}`);
+      console.error('Supabase Restore Error:', err);
+      let errorMsg = err.message || '還原失敗';
+      if (err.message === 'Failed to fetch') {
+        errorMsg = '無法連線到伺服器，請檢查網路或金鑰設定。';
+      }
+      alert(`❌ 還原失敗：\n${errorMsg}`);
     } finally {
       setIsFetching(false);
     }
@@ -118,11 +140,10 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
           <div className="bg-indigo-600 w-3 h-10 rounded-full"></div>
           <h2 className="text-4xl font-black text-slate-900 tracking-tighter uppercase italic">System Settings</h2>
         </div>
-        <p className="text-slate-500 font-bold ml-7">專業雲端同步與數據安全管理。</p>
+        <p className="text-slate-500 font-bold ml-7">專業雲端同步與數據安全管理中心。</p>
       </header>
 
       <div className="grid grid-cols-1 gap-10">
-        {/* Supabase Cloud Sync Section */}
         <section className="bg-slate-900 rounded-[3.5rem] p-12 shadow-2xl relative overflow-hidden group">
           <div className="relative z-10">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-6">
@@ -134,7 +155,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
               </div>
               <div className="bg-white/10 px-6 py-3 rounded-2xl border border-white/10 flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                <span className="text-[10px] font-black text-white uppercase tracking-widest">Connected to Services</span>
+                <span className="text-[10px] font-black text-white uppercase tracking-widest">Active Sync Cloud</span>
               </div>
             </div>
 
@@ -146,7 +167,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
                     type="text" 
                     value={syncId}
                     onChange={(e) => setSyncId(e.target.value)}
-                    placeholder="例如：my-secret-key-2025"
+                    placeholder="例如：moko-cat-hotel-2025"
                     className="flex-1 bg-white/10 border-2 border-white/10 rounded-2xl px-6 py-5 text-white font-black text-lg outline-none focus:border-indigo-500 focus:bg-white/20 transition-all placeholder:text-white/20"
                   />
                   <div className="flex gap-4">
@@ -168,49 +189,21 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
                 </div>
                 {lastSyncTime && (
                   <p className="text-[10px] font-bold text-emerald-400 ml-2 animate-fadeIn">
-                    ✓ 系統已在 {lastSyncTime} 完成最後一次同步
+                    ✓ 系統已在 {lastSyncTime} 完成最後一次同步作業
                   </p>
                 )}
               </div>
-
-              <div className="pt-8 border-t border-white/10">
-                <div className="flex flex-col md:flex-row gap-6">
-                   <div className="flex-1">
-                      <p className="text-[10px] text-white/40 font-bold leading-relaxed mb-1 italic">同步邏輯說明</p>
-                      <p className="text-[10px] text-white/60 leading-relaxed">
-                        「同步至雲端」會將您目前的「毛孩檔案、預約紀錄、房間狀態與日誌」打包上傳。
-                        「從雲端還原」則會從資料庫抓取該金鑰的最新存檔並覆蓋本地儲存。
-                      </p>
-                   </div>
-                   <div className="flex-1">
-                      <p className="text-[10px] text-white/40 font-bold leading-relaxed mb-1 italic">安全性提示</p>
-                      <p className="text-[10px] text-white/60 leading-relaxed">
-                        您的金鑰即為密鑰，請確保其複雜度且不要與他人分享。
-                        建議在每次完成重大資料更動後手動執行「同步至雲端」。
-                      </p>
-                   </div>
-                </div>
-              </div>
             </div>
           </div>
-          
-          <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500/10 rounded-full blur-[100px] -z-0"></div>
-          <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-500/10 rounded-full blur-[100px] -z-0"></div>
         </section>
 
-        {/* Physical Backup Section */}
         <section className="bg-white rounded-[3.5rem] p-12 border-2 border-slate-100 shadow-xl relative overflow-hidden group">
           <div className="relative z-10">
             <h3 className="text-2xl font-black text-slate-800 flex items-center gap-3 mb-8">
               <span className="bg-emerald-100 p-2 rounded-2xl text-xl">📁</span> 本地數據導出
             </h3>
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100 flex flex-col justify-between hover:border-emerald-200 transition-colors">
-                <div>
-                  <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-2">下載離線 JSON</h4>
-                  <p className="text-xs text-slate-500 leading-relaxed mb-6">將全館數據匯出為檔案存放在您的電腦或隨身碟。</p>
-                </div>
                 <button 
                   onClick={handleDownloadFile}
                   className="w-full py-5 bg-white text-slate-900 border-2 border-slate-900 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-slate-900 hover:text-white transition-all flex items-center justify-center gap-3"
@@ -218,12 +211,7 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
                   📥 匯出資料檔案
                 </button>
               </div>
-
               <div className="bg-slate-50 p-8 rounded-[2.5rem] border border-slate-100 flex flex-col justify-between">
-                <div>
-                  <h4 className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-2">手動上傳還原</h4>
-                  <p className="text-xs text-slate-500 leading-relaxed mb-6">選取先前下載的 .json 檔案來還原所有歷史紀錄。</p>
-                </div>
                 <input 
                   type="file" 
                   ref={fileInputRef} 
@@ -259,13 +247,15 @@ const Settings: React.FC<SettingsProps> = ({ onExport, onImport }) => {
           </div>
         </section>
 
-        {/* Security Info Card */}
-        <section className="p-10 bg-indigo-50 rounded-[3.5rem] flex items-center gap-8">
-           <div className="text-4xl">🛡️</div>
+        <section className="p-10 bg-indigo-50 rounded-[3.5rem] border-2 border-indigo-100 flex items-center gap-8">
+           <div className="text-4xl">🛠️</div>
            <div>
-              <h4 className="text-lg font-black text-slate-800">隱私與數據權益</h4>
+              <h4 className="text-lg font-black text-slate-800">故障排除提示 (Failed to fetch)</h4>
               <p className="text-sm text-slate-500 font-medium leading-relaxed mt-1">
-                本系統優先採用加密後的雲端存儲。如果您不希望資料留在雲端，您可以定期清理資料庫紀錄，並改用「本地數據導出」功能。
+                這通常表示瀏覽器無法連線至您的 Supabase。請檢查：<br/>
+                1. <strong>金鑰格式</strong>：您的金鑰應該是長度約 400 字元、以 <b>eyJ</b> 開頭的字串。<br/>
+                2. <strong>阻擋器</strong>：請關閉 AdBlock 或 uBlock 等廣告攔截插件。<br/>
+                3. <strong>網址正確</strong>：確認網址結尾沒有多餘空格。
               </p>
            </div>
         </section>
